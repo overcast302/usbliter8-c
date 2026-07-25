@@ -1,0 +1,88 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    name: ${{ matrix.display }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  display: Linux x86_64,    platform: linux,   artifact: usbliter8_boot-linux-x86_64 }
+          - { os: macos-latest,   display: macOS universal, platform: macos,   artifact: usbliter8_boot-macos-universal }
+          - { os: windows-latest, display: Windows x86_64,  platform: windows, artifact: usbliter8_boot-windows-x86_64 }
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install deps (Linux)
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev patchelf
+
+      - name: Install deps (macOS universal)
+        if: matrix.platform == 'macos'
+        run: |
+          softwareupdate --install-rosetta --agree-to-license
+          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          /opt/homebrew/bin/brew install libusb
+          arch -x86_64 /usr/local/bin/brew install libusb
+
+      - name: Set up MSYS2 (Windows)
+        if: matrix.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-libusb make pkg-config
+
+      - name: Build (Linux)
+        if: matrix.platform == 'linux'
+        run: make
+
+      - name: Build (macOS universal)
+        if: matrix.platform == 'macos'
+        run: make universal
+
+      - name: Build (Windows)
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        env:
+          MSYSTEM: MINGW64
+        run: make
+
+      - name: Stage (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          mkdir -p stage && cp usbliter8_boot stage/
+          SO=$(ldd usbliter8_boot | grep -oE '/[^ ]*libusb-1\.0\.so[^ ]*' | head -n1)
+          [ -n "$SO" ] && [ -f "$SO" ] && cp "$SO" stage/ && patchelf --set-rpath '$ORIGIN' stage/usbliter8_boot || true
+
+      - name: Stage (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          mkdir -p stage && cp usbliter8_boot stage/
+          DYLIB=$(ls libusb-1.0.*.dylib 2>/dev/null | head -n1)
+          [ -n "$DYLIB" ] && cp "$DYLIB" stage/ || true
+
+      - name: Stage (Windows)
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        env:
+          MSYSTEM: MINGW64
+        run: |
+          mkdir -p stage
+          cp usbliter8_boot.exe stage/
+          cp libusb-1.0.dll stage/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact }}
+          path: stage/*
+          if-no-files-found: error
